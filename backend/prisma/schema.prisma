@@ -1,0 +1,227 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TransactionStatus {
+  valid
+  suspicious
+  fraud
+}
+
+enum RiskLevel {
+  low_risk
+  medium_risk
+  high_risk
+}
+
+model Vendor {
+  id           String        @id @default(uuid()) @db.Uuid
+  name         String        @db.VarChar(160)
+  email        String        @unique @db.VarChar(320)
+  phone        String?       @unique @db.VarChar(32)
+  phoneVerifiedAt DateTime?  @map("phone_verified_at") @db.Timestamptz(6)
+  whatsappAlertsEnabled Boolean @default(false) @map("whatsapp_alerts_enabled")
+  whatsappOptedInAt DateTime? @map("whatsapp_opted_in_at") @db.Timestamptz(6)
+  passwordHash String        @map("password_hash") @db.VarChar(255)
+  timezone     String        @default("Asia/Kolkata") @db.VarChar(64)
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  transactions Transaction[]
+  customers    Customer[]
+  alerts       FraudAlert[]
+  loginLogs    LoginLog[]
+  auditLogs    AuditLog[]
+  otpChallenges OtpChallenge[]
+  subscription Subscription?
+  billingPayments BillingPayment[]
+  notificationJobs NotificationJob[]
+
+  @@map("vendors")
+}
+
+model Customer {
+  id             String        @id @default(uuid()) @db.Uuid
+  vendorId       String        @map("vendor_id") @db.Uuid
+  name           String        @db.VarChar(160)
+  phone          String?       @db.VarChar(32)
+  email          String?       @db.VarChar(320)
+  reputationScore Int          @default(100) @map("reputation_score") @db.SmallInt
+  flaggedCount   Int           @default(0) @map("flagged_count")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  vendor         Vendor        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  transactions   Transaction[]
+
+  @@unique([vendorId, phone])
+  @@unique([vendorId, id])
+  @@index([vendorId, email])
+  @@map("customers")
+}
+
+model Transaction {
+  id            String             @id @default(uuid()) @db.Uuid
+  vendorId      String             @map("vendor_id") @db.Uuid
+  customerId    String?            @map("customer_id") @db.Uuid
+  utr           String             @db.VarChar(64)
+  amount        Decimal            @db.Decimal(14, 2)
+  occurredAt    DateTime           @map("occurred_at") @db.Timestamptz(6)
+  expectedAmount Decimal?          @map("expected_amount") @db.Decimal(14, 2)
+  screenshotUrl String?            @map("screenshot_url") @db.VarChar(2048)
+  screenshotMetadata Json?         @map("screenshot_metadata") @db.JsonB
+  evidencePath  String?            @map("evidence_path") @db.VarChar(512)
+  evidenceMimeType String?          @map("evidence_mime_type") @db.VarChar(80)
+  evidenceSize  Int?                @map("evidence_size")
+  riskScore     Int                @default(0) @map("risk_score")
+  riskLevel     RiskLevel          @default(low_risk) @map("risk_level")
+  riskFactors   Json?              @map("risk_factors") @db.JsonB
+  scoredAt      DateTime?          @map("scored_at") @db.Timestamptz(6)
+  status        TransactionStatus  @default(valid)
+  paymentVerificationStatus String @default("unverified") @map("payment_verification_status") @db.VarChar(32)
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  vendor        Vendor             @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  customer      Customer?          @relation(fields: [vendorId, customerId], references: [vendorId, id], onDelete: Restrict)
+  alerts        FraudAlert[]
+
+  // UTR is indexed but deliberately not unique: repeated submissions must remain observable.
+  @@index([vendorId, utr])
+  @@unique([vendorId, id])
+  @@index([vendorId, occurredAt(sort: Desc)])
+  @@index([vendorId, status, createdAt(sort: Desc)])
+  @@index([customerId, occurredAt(sort: Desc)])
+  @@map("transactions")
+}
+
+model FraudAlert {
+  id            String      @id @default(uuid()) @db.Uuid
+  transactionId String      @map("transaction_id") @db.Uuid
+  vendorId      String      @map("vendor_id") @db.Uuid
+  alertType     String      @map("alert_type") @db.VarChar(80)
+  description   String      @db.Text
+  score         Int         @default(0)
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  reviewedAt    DateTime?   @map("reviewed_at") @db.Timestamptz(6)
+  transaction   Transaction @relation(fields: [vendorId, transactionId], references: [vendorId, id], onDelete: Cascade)
+  vendor        Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, createdAt(sort: Desc)])
+  @@index([vendorId, reviewedAt, createdAt(sort: Desc)])
+  @@index([transactionId])
+  @@map("fraud_alerts")
+}
+
+model LoginLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  vendorId  String   @map("vendor_id") @db.Uuid
+  ip        String?  @db.VarChar(64)
+  device    String?  @db.VarChar(512)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  vendor    Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, createdAt(sort: Desc)])
+  @@map("login_logs")
+}
+
+model RiskRule {
+  id          String   @id @default(uuid()) @db.Uuid
+  ruleName    String   @map("rule_name") @db.VarChar(120)
+  ruleCode    String   @unique @map("rule_code") @db.VarChar(80)
+  score       Int      @db.SmallInt
+  description String   @db.Text
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("risk_rules")
+}
+
+// Append-only application audit history. Mutations are enforced in the service layer.
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  vendorId   String?  @map("vendor_id") @db.Uuid
+  actorType  String   @map("actor_type") @db.VarChar(40)
+  action     String   @db.VarChar(120)
+  entityType String   @map("entity_type") @db.VarChar(80)
+  entityId   String?  @map("entity_id") @db.VarChar(80)
+  metadata   Json?    @db.JsonB
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  vendor     Vendor?  @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  @@index([vendorId, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+model OtpChallenge {
+  id          String   @id @default(uuid()) @db.Uuid
+  vendorId    String   @map("vendor_id") @db.Uuid
+  phone       String   @db.VarChar(32)
+  providerRef String?  @map("provider_ref") @db.VarChar(160)
+  codeHash    String?  @map("code_hash") @db.VarChar(128)
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz(6)
+  attempts    Int      @default(0)
+  consumedAt  DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  vendor      Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, createdAt(sort: Desc)])
+  @@map("otp_challenges")
+}
+
+model Subscription {
+  id                     String   @id @default(uuid()) @db.Uuid
+  vendorId               String   @unique @map("vendor_id") @db.Uuid
+  planCode               String   @map("plan_code") @db.VarChar(40)
+  status                 String   @default("inactive") @db.VarChar(32)
+  providerSubscriptionId String?  @unique @map("provider_subscription_id") @db.VarChar(100)
+  currentPeriodEnd       DateTime? @map("current_period_end") @db.Timestamptz(6)
+  cancelAtPeriodEnd      Boolean  @default(false) @map("cancel_at_period_end")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  vendor                 Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+model BillingPayment {
+  id                String   @id @default(uuid()) @db.Uuid
+  vendorId          String   @map("vendor_id") @db.Uuid
+  providerOrderId   String   @unique @map("provider_order_id") @db.VarChar(100)
+  providerPaymentId String?  @unique @map("provider_payment_id") @db.VarChar(100)
+  amount            Int
+  currency          String   @default("INR") @db.VarChar(3)
+  status            String   @default("created") @db.VarChar(32)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  vendor            Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, createdAt(sort: Desc)])
+  @@map("billing_payments")
+}
+
+model RazorpayWebhookEvent {
+  eventId   String   @id @map("event_id") @db.VarChar(100)
+  eventType String   @map("event_type") @db.VarChar(100)
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  @@map("razorpay_webhook_events")
+}
+
+model NotificationJob {
+  id          String   @id @default(uuid()) @db.Uuid
+  vendorId    String   @map("vendor_id") @db.Uuid
+  channel     String   @db.VarChar(32)
+  payload     Json     @db.JsonB
+  status      String   @default("pending") @db.VarChar(32)
+  attempts    Int      @default(0)
+  availableAt DateTime @default(now()) @map("available_at") @db.Timestamptz(6)
+  lastError   String?  @map("last_error") @db.VarChar(500)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  vendor      Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt])
+  @@map("notification_jobs")
+}
+
